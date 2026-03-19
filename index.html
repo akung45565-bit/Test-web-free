@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P File Transfer</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+    <style>
+        :root { --primary: #25d366; --secondary: #075e54; --bg: #f0f2f5; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg); margin: 0; padding: 20px; display: flex; justify-content: center; }
+        .container { background: white; width: 100%; max-width: 450px; padding: 25px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+        h2 { color: var(--secondary); text-align: center; margin-top: 0; }
+        input, button { width: 100%; padding: 12px; margin: 10px 0; border-radius: 8px; border: 1px solid #ddd; font-size: 16px; box-sizing: border-box; }
+        button { background: var(--primary); color: white; border: none; font-weight: bold; cursor: pointer; transition: 0.3s; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        #status { text-align: center; font-weight: bold; padding: 10px; border-radius: 5px; background: #eee; margin: 10px 0; }
+        .preview-img { width: 100%; margin-top: 15px; border-radius: 8px; display: none; border: 2px solid #ddd; }
+        progress { width: 100%; height: 20px; accent-color: var(--primary); }
+        .download-link { display: block; text-align: center; background: var(--secondary); color: white; text-decoration: none; padding: 12px; border-radius: 8px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>P2P Fast Share</h2>
+    
+    <input type="text" id="roomId" placeholder="Nama Room (Contoh: bagifile)">
+    <button id="joinBtn">Buat / Gabung Room</button>
+    
+    <div id="status">Status: Masukkan Nama Room</div>
+
+    <div id="transferArea" style="opacity: 0.5; pointer-events: none;">
+        <progress id="progBar" value="0" max="100"></progress>
+        <input type="file" id="fileInput">
+        <button id="sendBtn">Kirim File</button>
+    </div>
+
+    <div id="resultArea">
+        <img id="imgPreview" class="preview-img">
+        <div id="downloadBtnArea"></div>
+    </div>
+</div>
+
+<script>
+    // === MASUKKAN KONFIGURASI FIREBASE KAMU DI SINI ===
+    const firebaseConfig = {
+        apiKey: "AIza...",
+        authDomain: "proyek-anda.firebaseapp.com",
+        databaseURL: "https://proyek-anda.firebaseio.com",
+        projectId: "proyek-anda",
+        storageBucket: "proyek-anda.appspot.com",
+        messagingSenderId: "12345",
+        appId: "1:12345:web:abcde"
+    };
+    // ===============================================
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+    let pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    let dataChannel;
+    let roomRef;
+    let receivedChunks = [];
+    let incomingFileInfo = null;
+
+    // 1. Join Room
+    document.getElementById('joinBtn').onclick = async () => {
+        const id = document.getElementById('roomId').value;
+        if (!id) return alert("Isi nama room!");
+        
+        document.getElementById('status').innerText = "Menghubungkan...";
+        roomRef = db.ref('rooms/' + id);
+        const snap = await roomRef.once('value');
+
+        if (!snap.exists()) {
+            setupAsSender(); // Orang pertama = Pengirim
+        } else {
+            setupAsReceiver(); // Orang kedua = Penerima
+        }
+    };
+
+    // Alur Pengirim
+    async function setupAsSender() {
+        dataChannel = pc.createDataChannel("fileTransfer");
+        bindChannelEvents();
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await roomRef.set({ offer: { type: offer.type, sdp: offer.sdp } });
+
+        pc.onicecandidate = e => {
+            if (e.candidate) roomRef.child('offerCandidates').push(e.candidate.toJSON());
+        };
+
+        roomRef.child('answer').on('value', async s => {
+            if (s.exists() && !pc.currentRemoteDescription) {
+                await pc.setRemoteDescription(new RTCSessionDescription(s.val()));
+            }
+        });
+
+        roomRef.child('answerCandidates').on('child_added', s => {
+            pc.addIceCandidate(new RTCIceCandidate(s.val()));
+        });
+    }
+
+    // Alur Penerima
+    async function setupAsReceiver() {
+        pc.ondatachannel = e => {
+            dataChannel = e.channel;
+            bindChannelEvents();
+        };
+
+        const snap = await roomRef.child('offer').once('value');
+        await pc.setRemoteDescription(new RTCSessionDescription(snap.val()));
+
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await roomRef.update({ answer: { type: answer.type, sdp: answer.sdp } });
+
+        pc.onicecandidate = e => {
+            if (e.candidate) roomRef.child('answerCandidates').push(e.candidate.toJSON());
+        };
+
+        roomRef.child('offerCandidates').on('child_added', s => {
+            pc.addIceCandidate(new RTCIceCandidate(s.val()));
+        });
+    }
+
+    // 2. Event Handler Data Channel
+    function bindChannelEvents() {
+        dataChannel.onopen = () => {
+            document.getElementById('status').innerText = "Status: TERHUBUNG ✅";
+            document.getElementById('status').style.background = "#d4edda";
+            document.getElementById('transferArea').style.opacity = "1";
+            document.getElementById('transferArea').style.pointerEvents = "auto";
+        };
+
+        dataChannel.onmessage = e => {
+            if (typeof e.data === 'string') {
+                if (e.data === "DONE") {
+                    // Selesai, Gabungkan Chunks
+                    const blob = new Blob(receivedChunks, { type: incomingFileInfo.type });
+                    const url = URL.createObjectURL(blob);
+                    
+                    // Jika Gambar, tampilkan preview
+                    if (incomingFileInfo.type.startsWith('image/')) {
+                        const img = document.getElementById('imgPreview');
+                        img.src = url;
+                        img.style.display = 'block';
+                    }
+
+                    document.getElementById('downloadBtnArea').innerHTML = `
+                        <a href="${url}" download="${incomingFileInfo.name}" class="download-link">
+                            Simpan ${incomingFileInfo.name}
+                        </a>`;
+                    
+                    document.getElementById('status').innerText = "File Diterima!";
+                    receivedChunks = [];
+                } else {
+                    // Ini Metadata
+                    incomingFileInfo = JSON.parse(e.data);
+                    document.getElementById('status').innerText = "Menerima: " + incomingFileInfo.name;
+                }
+            } else {
+                receivedChunks.push(e.data);
+            }
+        };
+    }
+
+    // 3. Fungsi Kirim File
+    document.getElementById('sendBtn').onclick = () => {
+        const file = document.getElementById('fileInput').files[0];
+        if (!file) return alert("Pilih file dulu!");
+
+        // Kirim Info File
+        dataChannel.send(JSON.stringify({ name: file.name, type: file.type }));
+
+        const reader = new FileReader();
+        reader.onload = e => {
+            const buffer = e.target.result;
+            const chunkSize = 16384;
+            let offset = 0;
+
+            const sendChunk = () => {
+                while (offset < buffer.byteLength) {
+                    // Cek Buffer agar tidak crash
+                    if (dataChannel.bufferedAmount > 1000000) {
+                        setTimeout(sendChunk, 50);
+                        return;
+                    }
+                    const chunk = buffer.slice(offset, offset + chunkSize);
+                    dataChannel.send(chunk);
+                    offset += chunkSize;
+                    
+                    // Update Progress Bar
+                    document.getElementById('progBar').value = (offset / buffer.byteLength) * 100;
+                }
+                dataChannel.send("DONE");
+                document.getElementById('status').innerText = "File Terkirim!";
+            };
+            sendChunk();
+        };
+        reader.readAsArrayBuffer(file);
+    };
+</script>
+
+</body>
+</html>
