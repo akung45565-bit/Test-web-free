@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P File Transfer (Tanpa Firebase)</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #f0f2f5; padding: 20px; display: flex; justify-content: center; }
+        .box { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); width: 100%; max-width: 400px; }
+        input, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box; }
+        button { background: #007bff; color: white; border: none; font-weight: bold; cursor: pointer; }
+        button.gabung { background: #28a745; }
+        #status { text-align: center; font-weight: bold; margin: 10px 0; padding: 10px; background: #e9ecef; border-radius: 6px; }
+        img, video, audio { width: 100%; margin-top: 10px; border-radius: 8px; }
+    </style>
+</head>
+<body>
+
+<div class="box">
+    <h2 style="text-align: center; margin-top: 0;">Transfer File WebRTC</h2>
+    
+    <input type="text" id="roomInput" placeholder="Ketik Nama Room (misal: ruang123)">
+    
+    <div style="display: flex; gap: 10px;">
+        <button id="btnBuat" onclick="buatRoom()">1. Buat Room</button>
+        <button id="btnGabung" class="gabung" onclick="gabungRoom()">2. Gabung</button>
+    </div>
+
+    <div id="status">Status: Belum Terhubung</div>
+
+    <hr>
+
+    <div id="areaTransfer" style="opacity: 0.5; pointer-events: none;">
+        <input type="file" id="fileInput">
+        <button onclick="kirimFile()">Kirim File</button>
+    </div>
+
+    <div id="areaHasil"></div>
+</div>
+
+<script>
+    let peer;
+    let koneksi;
+
+    // HP 1: Membuat Room
+    function buatRoom() {
+        const roomName = document.getElementById('roomInput').value;
+        if (!roomName) return alert("Isi nama room dulu!");
+
+        document.getElementById('status').innerText = "Membuat room...";
+        
+        // Buat ID Peer sesuai nama room
+        peer = new Peer(roomName); 
+
+        peer.on('open', (id) => {
+            document.getElementById('status').innerText = "Room siap! Menunggu HP 2 gabung ke: " + id;
+        });
+
+        // Menunggu HP 2 terhubung
+        peer.on('connection', (conn) => {
+            koneksi = conn;
+            setupKoneksi();
+        });
+
+        peer.on('error', (err) => {
+            document.getElementById('status').innerText = "Error: Nama room mungkin sudah dipakai.";
+        });
+    }
+
+    // HP 2: Bergabung ke Room
+    function gabungRoom() {
+        const targetRoom = document.getElementById('roomInput').value;
+        if (!targetRoom) return alert("Isi nama room yang mau dituju!");
+
+        document.getElementById('status').innerText = "Mencari room...";
+        
+        // HP 2 pakai ID acak, lalu menyambung ke nama room HP 1
+        peer = new Peer(); 
+        
+        peer.on('open', () => {
+            koneksi = peer.connect(targetRoom);
+            setupKoneksi();
+        });
+    }
+
+    // Mengatur aliran data setelah terhubung
+    function setupKoneksi() {
+        koneksi.on('open', () => {
+            document.getElementById('status').innerText = "TERHUBUNG ✅";
+            document.getElementById('status').style.background = "#d4edda";
+            document.getElementById('areaTransfer').style.opacity = "1";
+            document.getElementById('areaTransfer').style.pointerEvents = "auto";
+        });
+
+        koneksi.on('data', (data) => {
+            // PeerJS otomatis menangani file (Blob/ArrayBuffer)
+            if (data.file) {
+                document.getElementById('status').innerText = "File diterima!";
+                
+                const blob = new Blob([data.file], { type: data.tipe });
+                const url = URL.createObjectURL(blob);
+                const areaHasil = document.getElementById('areaHasil');
+                
+                areaHasil.innerHTML = `
+                    <p>File: <b>${data.nama}</b></p>
+                    <a href="${url}" download="${data.nama}" style="display:block; text-align:center; background:#28a745; color:white; padding:10px; text-decoration:none; border-radius:5px;">Download File</a>
+                `;
+
+                // Jika gambar, langsung tampilkan
+                if (data.tipe.startsWith('image/')) {
+                    areaHasil.innerHTML += `<img src="${url}">`;
+                } 
+                // Jika video, langsung bisa diputar
+                else if (data.tipe.startsWith('video/')) {
+                    areaHasil.innerHTML += `<video controls src="${url}"></video>`;
+                }
+                // Jika audio, langsung bisa diputar
+                else if (data.tipe.startsWith('audio/')) {
+                    areaHasil.innerHTML += `<audio controls src="${url}"></audio>`;
+                }
+            }
+        });
+    }
+
+    // Mengirim File
+    function kirimFile() {
+        const file = document.getElementById('fileInput').files[0];
+        if (!file) return alert("Pilih file dulu!");
+
+        document.getElementById('status').innerText = "Mengirim " + file.name + "...";
+
+        // PeerJS bisa langsung mengirim File/Blob utuh beserta metadata
+        koneksi.send({
+            file: file,
+            nama: file.name,
+            tipe: file.type
+        });
+
+        document.getElementById('status').innerText = "File terkirim!";
+    }
+</script>
+
+</body>
+</html>
